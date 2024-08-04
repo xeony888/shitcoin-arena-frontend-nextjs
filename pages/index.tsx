@@ -374,9 +374,6 @@ export default function Home() {
       console.error(e);
       console.log({ imgSrc, src: img!.src });
     }
-    //translate and draw image
-
-    //draw circle
     context.beginPath();
     context.arc(canvas.width / 2, canvas.height / 2, width * 3, 0, 2 * Math.PI);
     context.lineWidth = 1;
