@@ -84,6 +84,7 @@ export default function Home() {
   const [tokenLeaderboard, setTokenLeaderboard] = useState<any[]>([]);
   const [myToken, setMyToken] = useState<any>();
   const [tokenInTop5, setTokenInTop5] = useState<boolean>(false);
+
   useEffect(() => {
     fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/servers`).then(async (res) => {
       const json = await res.json();
@@ -474,7 +475,7 @@ export default function Home() {
               {ships.map((data: any, i: number) => {
                 return (
                   <div className="carousel-item card card-compact w-64 bg-base-100 shadow-xl" key={i}>
-                    <figure >
+                    <figure>
                       <img src={data.src} className="h-48 p-4" />
                     </figure>
                     <div className="card-body">
