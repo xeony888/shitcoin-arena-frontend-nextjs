@@ -11,7 +11,7 @@ import TransactionPending from "@/components/TransactionPending";
 import TransactionSuccess from "@/components/TransactionSuccess";
 import Select from "@/components/Select";
 import ServerDropdown from "@/components/ServerDropdown";
-import { shortenAddress, shortenShortenAddress } from "@/components/utils";
+import { d, distance, filter, shortenAddress, shortenShortenAddress } from "@/components/utils";
 
 let canvas: HTMLCanvasElement;
 let context: CanvasRenderingContext2D;
@@ -60,6 +60,8 @@ const down: string[] = [];
 let mousePos: [number, number] | undefined;
 const powerUpKeys: string[] = []; //["z", "x", "c", "v", "b"];
 let ran = 0;
+let spectatingPlayerGlobal: string = "";
+let spectatingGlobal: boolean = false;
 export default function Home() {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [selectedShip, setSelectedShip] = useState<any>(ships[0]);
@@ -84,7 +86,36 @@ export default function Home() {
   const [tokenLeaderboard, setTokenLeaderboard] = useState<any[]>([]);
   const [myToken, setMyToken] = useState<any>();
   const [tokenInTop5, setTokenInTop5] = useState<boolean>(false);
-
+  const [showModal, setShowModal] = useState<boolean>(true);
+  const [spectating, setSpectating] = useState<boolean>(false);
+  const [spectatingPlayer, setSpectatingPlayer] = useState<string>("");
+  useEffect(() => {
+    if (!publicKey) return;
+    socket = io(process.env.NEXT_PUBLIC_BACKEND_URL!, {
+      auth: {
+        publicKey: publicKey.toString(),
+        signature
+      }
+    });
+    socket.connect();
+    socket.on("gameState", draw);
+    socket.on("receiveLeaderboard", receiveLeaderboard);
+    socket.on("receiveMessages", receiveMessages);
+    socket.on("receiveMainMessage", receiveMainMessage);
+    socket.on("receiveTokenLeaderboard", receiveTokenLeaderboard);
+    socket.on("dead", endgame);
+    return () => {
+      if (socket) {
+        socket.disconnect();
+        socket.off("gameState", draw);
+        socket.off("receiveLeaderboard", receiveLeaderboard);
+        socket.off("receiveMessages", receiveMessages);
+        socket.off("receiveMainMessage", receiveMainMessage);
+        socket.off("receiveTokenLeaderboard", receiveTokenLeaderboard);
+        socket = undefined as unknown as Socket;
+      }
+    };
+  }, [selectedServer, publicKey]);
   useEffect(() => {
     fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/servers`).then(async (res) => {
       const json = await res.json();
@@ -243,21 +274,8 @@ export default function Home() {
       tx.recentBlockhash = blockhash.blockhash;
       tx.feePayer = publicKey;
       const signed = await signTransaction(tx);
-      const sig = await connection.sendRawTransaction(signed.serialize());
+      // const sig = await connection.sendRawTransaction(signed.serialize());
       setSucceededTransaction(true);
-      socket = io(process.env.NEXT_PUBLIC_BACKEND_URL!, {
-        auth: {
-          publicKey: publicKey.toString(),
-          signature
-        }
-      });
-      socket.connect();
-      socket.on("gameState", draw);
-      socket.on("receiveLeaderboard", receiveLeaderboard);
-      socket.on("receiveMessages", receiveMessages);
-      socket.on("receiveMainMessage", receiveMainMessage);
-      socket.on("receiveTokenLeaderboard", receiveTokenLeaderboard);
-      socket.on("dead", endgame);
       socket.emit("respawn", { selectedCoin, selectedShip, luckAmount });
       setIsPlaying(true);
     } catch (e) {
@@ -276,20 +294,22 @@ export default function Home() {
     setTimeout(() => {
       setIsPlaying(false);
       setKilledBy("");
-      if (socket) {
-        socket.disconnect();
-        socket.off("gameState", draw);
-        socket.off("receiveLeaderboard", receiveLeaderboard);
-        socket.off("receiveMessages", receiveMessages);
-        socket.off("receiveMainMessage", receiveMainMessage);
-        socket.off("receiveTokenLeaderboard", receiveTokenLeaderboard);
-        socket = undefined as unknown as Socket;
-      }
     }, 1500);
   };
   const draw = (data: any) => {
     let player = data.find((object: any) => object.address === publicKey!.toString());
+    if (!player) {
+      setSpectating(true);
+      player = data.find((object: any) => spectatingPlayerGlobal && object.address === spectatingPlayerGlobal);
+      if (!player) {
+        const players = data.filter((object: any) => object.address);
+        player = players[Math.floor(Math.random() * players.length)];
+        setSpectatingPlayer(player.address);
+        spectatingPlayerGlobal = player.address;
+      }
+    }
     if (player) {
+      data = filter(player, data, d(canvas.width, canvas.height));
       resetCanvas([player.x, player.y]);
       for (const object of data) {
         if (object.address && object.address === player.address) {
@@ -298,7 +318,7 @@ export default function Home() {
           drawObject(object.angle, object.x - player.x, object.y - player.y, object.width, object.height ?? object.width, object.imgSrc, object.health, object.color, object.teamColor, object.address);
         }
       }
-    } else { }
+    }
   };
   const receiveMessages = (messages: string[][]) => {
     if (messages) {
@@ -322,9 +342,11 @@ export default function Home() {
   };
   const receiveTokenLeaderboard = (leaderboard: any[]) => {
     const l = leaderboard.map(l => l[1]).sort((a, b) => b.points - a.points).slice(0, 5);
-    const myToken = leaderboard.find((l) => l[1].address === selectedCoin.address);
+    const myToken = leaderboard.find((l) => l[1].address === selectedCoin?.address);
+    if (myToken) {
+      setMyToken(myToken[1]);
+    }
     setTokenInTop5(myToken && myToken[1].points >= l[l.length - 1].points);
-    setMyToken(myToken[1]);
     setTokenLeaderboard(l);
   };
   const receiveLeaderboard = (leaderboard: { address: string, points: number; }[]) => {
@@ -424,7 +446,6 @@ export default function Home() {
       drawHealthbar(relX, relY + 10, health);
     }
     if (teamColor) {
-      console.log(teamColor);
       drawName(relX, relY - 10, teamColor, address);
     }
   };
@@ -460,49 +481,67 @@ export default function Home() {
           <TransactionPending />
         </div>
       }
-      {!isPlaying &&
+      {!isPlaying && !showModal &&
+        <div className="fixed bottom-0 left-0 m-4">
+          <BasicButton text="Menu" onClick={() => setShowModal(true)} />
+        </div>
+      }
+      {spectating &&
+        <div className="fixed bottom-0 right-0 flex flex-row justify-center items-center gap-2">
+          <p>{`Spectating ${shortenAddress(spectatingPlayer)}`}</p>
+          <BasicButton onClick={() => { setSpectatingPlayer(""), spectatingPlayerGlobal = ""; }} text="Spectate New Player" />
+        </div>
+      }
+      {!isPlaying && showModal &&
         <div className="absolute top-0 left-0 bg-transparent w-full h-full flex justify-center items-center z-10">
-          <div className="border-white border-2 max-w-5xl rounded-xl p-8 flex flex-col justify-center items-center ">
-            <div className="grid grid-cols-2 items-center place-items-center gap-2 px-2 w-full">
-              <Select text="Teams" selected={gameMode === "Teams"} onClick={() => setGameMode("Teams")} />
-              <Select text="FFA" disabled selected={gameMode === "FFA"} onClick={() => setGameMode("FFA")} />
+          <div className="relative max-w-5xl">
+            <div className="absolute top-0 left-0 m-4">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-6 hover:cursor-pointer" onClick={() => setShowModal(false)}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
             </div>
-            <p className="text-8xl text-center" style={{ fontFamily: "SankofaDisplay" }}>Shitcoin Arena</p>
-            <div className="carousel p-4 space-x-4 max-w-4xl rounded-box">
-              {ships.map((data: any, i: number) => {
-                return (
-                  <div className="carousel-item card card-compact w-64 bg-base-100 shadow-xl" key={i}>
-                    <figure>
-                      <img src={data.src} className="h-48 p-4" />
-                    </figure>
-                    <div className="card-body">
-                      <h2 className="card-title justify-center">{data.name}</h2>
-                      {/* <p className="text-center">{data.description}</p> */}
-                      <div className="card-actions justify-center">
-                        <button onClick={() => setSelectedShip(data)} className="btn btn-primary" disabled={selectedShip.name === data.name}>{selectedShip.name === data.name ? "Selected" : "Select"}</button>
+            <div className="border-white border-2 max-w-5xl rounded-xl p-8 flex flex-col justify-center items-center ">
+              <div className="grid grid-cols-2 items-center place-items-center gap-2 px-2 w-full">
+                <Select text="Teams" selected={gameMode === "Teams"} onClick={() => setGameMode("Teams")} />
+                <Select text="FFA" disabled selected={gameMode === "FFA"} onClick={() => setGameMode("FFA")} />
+              </div>
+              <p className="text-8xl text-center" style={{ fontFamily: "SankofaDisplay" }}>Shitcoin Arena</p>
+              <div className="carousel p-4 space-x-4 max-w-4xl rounded-box">
+                {ships.map((data: any, i: number) => {
+                  return (
+                    <div className="carousel-item card card-compact w-64 bg-base-100 shadow-xl" key={i}>
+                      <figure>
+                        <img src={data.src} className="h-48 p-4" />
+                      </figure>
+                      <div className="card-body">
+                        <h2 className="card-title justify-center">{data.name}</h2>
+                        {/* <p className="text-center">{data.description}</p> */}
+                        <div className="card-actions justify-center">
+                          <button onClick={() => setSelectedShip(data)} className="btn btn-primary" disabled={selectedShip.name === data.name}>{selectedShip.name === data.name ? "Selected" : "Select"}</button>
+                        </div>
                       </div>
                     </div>
+                  );
+                })}
+              </div>
+              {/* User picks spaceship, sets base price. Then adjusts price, increasing chance of getting power ups */}
+              <div className="flex flex-row w-full justify-center items-center gap-5 px-10">
+                <div className="w-[50%]">
+                  <input type="range" min={0} max="100" value={luckAmount} onChange={(event: any) => setLuckAmount(Number(event.target.value))} className="range" />
+                  <div className="flex flex-row justify-center gap-2">
+                    <p>Luck: {luckAmount}</p>
+                    <p>$SOL Price: {Math.round((luckAmount * 0.01 + selectedShip.price) * 100) / 100}</p>
                   </div>
-                );
-              })}
-            </div>
-            {/* User picks spaceship, sets base price. Then adjusts price, increasing chance of getting power ups */}
-            <div className="flex flex-row w-full justify-center items-center gap-5 px-10">
-              <div className="w-[50%]">
-                <input type="range" min={0} max="100" value={luckAmount} onChange={(event: any) => setLuckAmount(Number(event.target.value))} className="range" />
-                <div className="flex flex-row justify-center gap-2">
-                  <p>Luck: {luckAmount}</p>
-                  <p>$SOL Price: {Math.round((luckAmount * 0.01 + selectedShip.price) * 100) / 100}</p>
+                </div>
+                <div className="w-[50%]">
+                  <CustomDropdown values={coins} title="Select Coin" onChange={(c: any) => setSelectedCoin(c)} />
                 </div>
               </div>
-              <div className="w-[50%]">
-                <CustomDropdown values={coins} title="Select Coin" onChange={(c: any) => setSelectedCoin(c)} />
+              <div className="w-full grid grid-cols-3 place-items-center items-center mt-4 gap-4">
+                <WalletMultiButtonDynamic />
+                <BasicButton text="Play" onClick={play} />
+                <ServerDropdown values={servers} title="Select Server" onChange={(s) => setSelectedServer(s)} />
               </div>
-            </div>
-            <div className="w-full grid grid-cols-3 place-items-center items-center mt-4 gap-4">
-              <WalletMultiButtonDynamic />
-              <BasicButton text="Play" onClick={play} />
-              <ServerDropdown values={servers} title="Select Server" onChange={(s) => setSelectedServer(s)} />
             </div>
           </div>
         </div>
